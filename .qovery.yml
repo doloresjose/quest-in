@@ -1,0 +1,11 @@
+---
+application:
+  name: "quest-in"
+  project: "whoogle"
+  organization: "QoveryCommunity"
+routers:
+- name: "main-quest-in"
+  routes:
+  - application_name: "quest-in"
+    paths:
+    - "/*"
