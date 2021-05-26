@@ -2,7 +2,6 @@ import argparse
 import base64
 import io
 import json
-import os
 import pickle
 import urllib.parse as urlparse
 import uuid
@@ -16,8 +15,9 @@ from requests import exceptions
 from app import app
 from app.models.config import Config
 from app.request import Request, TorError
-from app.utils.session_utils import valid_user_session
-from app.utils.routing_utils import *
+from app.utils.bangs import resolve_bang
+from app.utils.session import generate_user_key, valid_user_session
+from app.utils.search import *
 
 # Load DDG bang json files only on init
 bang_json = json.load(open(app.config['BANG_FILE']))
@@ -53,24 +53,16 @@ def before_request_func():
     # Generate session values for user if unavailable
     if not valid_user_session(session):
         session['config'] = json.load(open(app.config['DEFAULT_CONFIG'])) \
-            if os.path.exists(app.config['DEFAULT_CONFIG']) else {
-            'url': request.url_root}
+            if os.path.exists(app.config['DEFAULT_CONFIG']) else {}
         session['uuid'] = str(uuid.uuid4())
-        session['fernet_keys'] = generate_user_keys(True)
+        session['key'] = generate_user_key(True)
 
         # Flag cookies as possibly disabled in order to prevent against
         # unnecessary session directory expansion
         g.cookies_disabled = True
 
-    if session['uuid'] not in app.user_elements:
-        app.user_elements.update({session['uuid']: 0})
-
     # Handle https upgrade
-    https_only = os.getenv('HTTPS_ONLY', False)
-    is_heroku = request.url.endswith('.herokuapp.com')
-    is_http = request.url.startswith('http://')
-
-    if (is_heroku and is_http) or (https_only and is_http):
+    if needs_https(request.url):
         return redirect(
             request.url.replace('http://', 'https://', 1),
             code=308)
@@ -80,7 +72,7 @@ def before_request_func():
     if not g.user_config.url:
         g.user_config.url = request.url_root.replace(
             'http://',
-            'https://') if https_only else request.url_root
+            'https://') if os.getenv('HTTPS_ONLY', False) else request.url_root
 
     g.user_request = Request(
         request.headers.get('User-Agent'),
@@ -91,14 +83,7 @@ def before_request_func():
 
 
 @app.after_request
-def after_request_func(response):
-    if app.user_elements[session['uuid']] <= 0 and '/element' in request.url:
-        # Regenerate element key if all elements have been served to user
-        session['fernet_keys'][
-            'element_key'] = '' if not g.cookies_disabled else \
-            app.default_key_set['element_key']
-        app.user_elements[session['uuid']] = 0
-
+def after_request_func(resp):
     # Check if address consistently has cookies blocked,
     # in which case start removing session files after creation.
     #
@@ -112,7 +97,11 @@ def after_request_func(response):
         for key in session_list:
             session.pop(key)
 
-    return response
+    resp.headers['Content-Security-Policy'] = app.config['CSP']
+    if os.environ.get('HTTPS_ONLY', False):
+        resp.headers['Content-Security-Policy'] += 'upgrade-insecure-requests'
+
+    return resp
 
 
 @app.errorhandler(404)
@@ -121,30 +110,46 @@ def unknown_page(e):
     return redirect(g.app_location)
 
 
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    return ''
+
+
 @app.route('/', methods=['GET'])
 @auth_required
 def index():
     # Reset keys
-    session['fernet_keys'] = generate_user_keys(g.cookies_disabled)
-    error_message = session[
-        'error_message'] if 'error_message' in session else ''
-    session['error_message'] = ''
+    session['key'] = generate_user_key(g.cookies_disabled)
+
+    # Redirect if an error was raised
+    if 'error_message' in session and session['error_message']:
+        error_message = session['error_message']
+        session['error_message'] = ''
+        return render_template('error.html', error_message=error_message)
 
     return render_template('index.html',
                            languages=app.config['LANGUAGES'],
                            countries=app.config['COUNTRIES'],
+                           translation=app.config['TRANSLATIONS'][
+                               g.user_config.get_localization_lang()
+                           ],
+                           logo=render_template(
+                               'logo.html',
+                               dark=g.user_config.dark),
                            config=g.user_config,
-                           error_message=error_message,
                            tor_available=int(os.environ.get('TOR_AVAILABLE')),
                            version_number=app.config['VERSION_NUMBER'])
 
 
 @app.route('/opensearch.xml', methods=['GET'])
-@auth_required
 def opensearch():
     opensearch_url = g.app_location
     if opensearch_url.endswith('/'):
         opensearch_url = opensearch_url[:-1]
+
+    # Enforce https for opensearch template
+    if needs_https(opensearch_url):
+        opensearch_url = opensearch_url.replace('http://', 'https://', 1)
 
     get_only = g.user_config.get_only or 'Chrome' in request.headers.get(
         'User-Agent')
@@ -154,6 +159,14 @@ def opensearch():
         main_url=opensearch_url,
         request_type='' if get_only else 'method="post"'
     ), 200, {'Content-Disposition': 'attachment; filename="opensearch.xml"'}
+
+
+@app.route('/search.html', methods=['GET'])
+def search_html():
+    search_url = g.app_location
+    if search_url.endswith('/'):
+        search_url = search_url[:-1]
+    return render_template('search.html', url=search_url)
 
 
 @app.route('/autocomplete', methods=['GET', 'POST'])
@@ -188,19 +201,16 @@ def autocomplete():
 @app.route('/search', methods=['GET', 'POST'])
 @auth_required
 def search():
-    # Reset element counter
-    app.user_elements[session['uuid']] = 0
-
     # Update user config if specified in search args
     g.user_config = g.user_config.from_params(g.request_params)
 
-    search_util = RoutingUtils(request, g.user_config, session,
-                               cookies_disabled=g.cookies_disabled)
+    search_util = Search(request, g.user_config, session,
+                         cookies_disabled=g.cookies_disabled)
     query = search_util.new_search_query()
 
-    resolved_bangs = search_util.bang_operator(bang_json)
-    if resolved_bangs != '':
-        return redirect(resolved_bangs)
+    bang = resolve_bang(query=query, bangs_dict=bang_json)
+    if bang != '':
+        return redirect(bang)
 
     # Redirect to home if invalid/blank search
     if not query:
@@ -208,7 +218,7 @@ def search():
 
     # Generate response and number of external elements from the page
     try:
-        response, elements = search_util.generate_response()
+        response = search_util.generate_response()
     except TorError as e:
         session['error_message'] = e.message + (
             "\\n\\nTor config is now disabled!" if e.disable else "")
@@ -216,27 +226,30 @@ def search():
             'tor']
         return redirect(url_for('.index'))
 
-    if search_util.feeling_lucky or elements < 0:
+    if search_util.feeling_lucky:
         return redirect(response, code=303)
 
-    # Keep count of external elements to fetch before
-    # the element key can be regenerated
-    app.user_elements[session['uuid']] = elements
+    # Return 503 if temporarily blocked by captcha
+    resp_code = 503 if has_captcha(str(response)) else 200
 
     return render_template(
         'display.html',
         query=urlparse.unquote(query),
         search_type=search_util.search_type,
-        dark_mode=g.user_config.dark,
+        config=g.user_config,
+        translation=app.config['TRANSLATIONS'][
+            g.user_config.get_localization_lang()
+        ],
         response=response,
         version_number=app.config['VERSION_NUMBER'],
         search_header=(render_template(
             'header.html',
-            dark_mode=g.user_config.dark,
+            config=g.user_config,
+            logo=render_template('logo.html', dark=g.user_config.dark),
             query=urlparse.unquote(query),
             search_type=search_util.search_type,
             mobile=g.user_request.mobile)
-                if 'isch' not in search_util.search_type else ''))
+                if 'isch' not in search_util.search_type else '')), resp_code
 
 
 @app.route('/config', methods=['GET', 'POST', 'PUT'])
@@ -287,7 +300,9 @@ def url():
     if len(q) > 0 and 'http' in q:
         return redirect(q)
     else:
-        return render_template('error.html', query=q)
+        return render_template(
+            'error.html',
+            error_message='Unable to resolve query: ' + q)
 
 
 @app.route('/imgres')
@@ -299,13 +314,12 @@ def imgres():
 @app.route('/element')
 @auth_required
 def element():
-    cipher_suite = Fernet(session['fernet_keys']['element_key'])
+    cipher_suite = Fernet(session['key'])
     src_url = cipher_suite.decrypt(request.args.get('url').encode()).decode()
     src_type = request.args.get('type')
 
     try:
         file_data = g.user_request.send(base_url=src_url).content
-        app.user_elements[session['uuid']] -= 1
         tmp_mem = io.BytesIO()
         tmp_mem.write(file_data)
         tmp_mem.seek(0)
@@ -336,7 +350,7 @@ def window():
     return render_template('display.html', response=results)
 
 
-def run_app():
+def run_app() -> None:
     parser = argparse.ArgumentParser(
         description='Whoogle Search console runner')
     parser.add_argument(

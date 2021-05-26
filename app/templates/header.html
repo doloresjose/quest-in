@@ -1,20 +1,31 @@
 {% if mobile %}
     <header>
-        <div class="bz1lBb">
-            <form class="Pg70bf" id="search-form" method="POST">
+        <div style="background-color: {{ 'var(--whoogle-dark-result-bg)' if config.dark else 'var(--whoogle-result-bg)' }} !important;" class="bz1lBb">
+            <form class="search-form Pg70bf" id="search-form" method="POST">
                 <a class="logo-link mobile-logo"
                    href="/"
-                   style="display:flex; justify-content:center; align-items:center; color:#685e79; font-size:18px; ">
-                    <span style="color: #685e79">Whoogle</span>
+                   style="display:flex; justify-content:center; align-items:center;">
+                    <div style="height: 1.75em;">
+                        {{ logo|safe }}
+                    </div>
                 </a>
                 <div class="H0PQec" style="width: 100%;">
                     <div class="sbc esbc autocomplete">
-                        <input id="search-bar" autocapitalize="none" autocomplete="off" class="noHIxc" name="q"
-                               style="background-color: {{ '#000' if dark_mode else '#fff' }};
-                                       color: {{ '#685e79' if dark_mode else '#000' }};
-                                       border: {{ '1px solid #685e79' if dark_mode else '' }}"
-                               spellcheck="false" type="text" value="{{ query }}">
+                        <input 
+                            id="search-bar" 
+                            autocapitalize="none" 
+                            autocomplete="off" 
+                            autocorrect="off"
+                            spellcheck="false" 
+                            class="noHIxc" 
+                            name="q"
+                            style="background-color: {{ 'var(--whoogle-dark-result-bg)' if config.dark else 'var(--whoogle-result-bg)' }} !important;
+                                   color: {{ 'var(--whoogle-dark-text)' if config.dark else 'var(--whoogle-text)' }};
+                            type="text" 
+                            value="{{ query[:query.find('-site:')] if '-site:' in query else query }}">
+                        <input style="color: {{ 'var(--whoogle-dark-text)' if config.dark else 'var(--whoogle-text)' }}" id="search-reset" type="reset" value="x">
                         <input name="tbm" value="{{ search_type }}" style="display: none">
+                        <input type="submit" style="display: none;">
                         <div class="sc"></div>
                     </div>
                 </div>
@@ -25,19 +36,30 @@
     <header>
         <div class="logo-div">
             <a class="logo-link" href="/">
-                <span style="color: #685e79">Whoogle</span>
+                <div style="height: 1.65em;">
+                    {{ logo|safe }}
+                </div>
             </a>
         </div>
         <div class="search-div">
             <form id="search-form" class="search-form" id="sf" method="POST">
                 <div class="autocomplete" style="width: 100%; flex: 1">
                     <div style="width: 100%; display: flex">
-                        <input id="search-bar" autocapitalize="none" autocomplete="off" class="noHIxc" name="q"
-                               spellcheck="false" type="text" value="{{ query }}"
-                               style="background-color: {{ '#000' if dark_mode else '#fff' }};
-                                       color: {{ '#685e79' if dark_mode else '#000' }};
-                                       border: {{ '1px solid #685e79' if dark_mode else '' }}">
+                        <input 
+                            id="search-bar" 
+                            autocapitalize="none" 
+                            autocomplete="off" 
+                            autocorrect="off"
+                            class="search-bar-desktop noHIxc" 
+                            name="q"
+                            spellcheck="false"
+                            type="text"
+                            value="{{ query[:query.find('-site:')] if '-site:' in query else query }}"
+                            style="background-color: {{ 'var(--whoogle-dark-result-bg)' if config.dark else 'var(--whoogle-result-bg)' }} !important;
+                                   color: {{ 'var(--whoogle-dark-text)' if config.dark else 'var(--whoogle-text)' }};
+                                   border-bottom: {{ '2px solid var(--whoogle-dark-element-bg)' if config.dark else '0px' }};">
                         <input name="tbm" value="{{ search_type }}" style="display: none">
+                        <input type="submit" style="display: none;">
                         <div class="sc"></div>
                     </div>
                 </div>
@@ -46,14 +68,4 @@
     </header>
 {% endif %}
 
-<script>
-    const searchBar = document.getElementById("search-bar");
-
-    searchBar.addEventListener("keyup", function (event) {
-        if (event.keyCode !== 13) {
-            handleUserInput(searchBar);
-        } else {
-            document.getElementById("search-form").submit();
-        }
-    });
-</script>
+<script type="text/javascript" src="static/js/header.js"></script>
