@@ -1,4 +1,4 @@
-from app.request import VALID_PARAMS
+from app.request import VALID_PARAMS, MAPS_URL
 from app.utils.results import *
 from bs4 import BeautifulSoup
 from bs4.element import ResultSet, Tag
@@ -7,6 +7,34 @@ from flask import render_template
 import re
 import urllib.parse as urlparse
 from urllib.parse import parse_qs
+
+
+def strip_blocked_sites(query: str) -> str:
+    """Strips the blocked site list from the query, if one is being
+    used.
+
+    Args:
+        query: The query string
+
+    Returns:
+        str: The query string without any "-site:..." filters
+    """
+    return query[:query.find('-site:')] if '-site:' in query else query
+
+
+def extract_q(q_str: str, href: str) -> str:
+    """Extracts the 'q' element from a result link. This is typically
+    either the link to a result's website, or a string.
+
+    Args:
+        q_str: The result link to parse
+        href: The full url to check for standalone 'q' elements first,
+              rather than parsing the whole query string and then checking.
+
+    Returns:
+        str: The 'q' element of the link, or an empty string
+    """
+    return parse_qs(q_str)['q'][0] if ('&q=' in href or '?q=' in href) else ''
 
 
 class Filter:
@@ -210,20 +238,18 @@ class Filter:
             link['target'] = '_blank'
 
         result_link = urlparse.urlparse(href)
-        query_link = parse_qs(
-            result_link.query
-        )['q'][0] if '?q=' in href else ''
+        q = extract_q(result_link.query, href)
 
-        if query_link.startswith('/'):
+        if q.startswith('/'):
             # Internal google links (i.e. mail, maps, etc) should still
             # be forwarded to Google
-            link['href'] = 'https://google.com' + query_link
+            link['href'] = 'https://google.com' + q
         elif '/search?q=' in href:
             # "li:1" implies the query should be interpreted verbatim,
             # which is accomplished by wrapping the query in double quotes
             if 'li:1' in href:
-                query_link = '"' + query_link + '"'
-            new_search = 'search?q=' + self.encrypt_path(query_link)
+                q = '"' + q + '"'
+            new_search = 'search?q=' + self.encrypt_path(q)
 
             query_params = parse_qs(urlparse.urlparse(href).query)
             for param in VALID_PARAMS:
@@ -234,13 +260,17 @@ class Filter:
             link['href'] = new_search
         elif 'url?q=' in href:
             # Strip unneeded arguments
-            link['href'] = filter_link_args(query_link)
+            link['href'] = filter_link_args(q)
 
             # Add no-js option
             if self.nojs:
                 append_nojs(link)
         else:
-            link['href'] = href
+            if href.startswith(MAPS_URL):
+                # Maps links don't work if a site filter is applied
+                link['href'] = MAPS_URL + "?q=" + strip_blocked_sites(q)
+            else:
+                link['href'] = href
 
         # Replace link location if "alts" config is enabled
         if self.alt_redirect:
